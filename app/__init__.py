@@ -1,0 +1,1 @@
+"""Moneywise bot application package."""
