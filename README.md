@@ -14,7 +14,6 @@
 - aiogram 3.x
 - SQLAlchemy (async)
 - SQLite (по умолчанию) или другая СУБД, поддерживаемая SQLAlchemy
-- Docker (опционально)
 
 ## Структура проекта
 
@@ -51,21 +50,36 @@ BOT_TOKEN=ваш_токен_бота
 python -m app.main
 ```
 
-## Запуск в Docker
+## Автозапуск через systemd
 
-1. Соберите образ:
+Ниже приведён пример unit-файла для systemd, который можно разместить в `/etc/systemd/system/moneywise-bot.service`:
 
-```bash
-docker build -t moneywise-bot .
+```ini
+[Unit]
+Description=Moneywise Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/moneywise-bot
+EnvironmentFile=/opt/moneywise-bot/.env
+ExecStart=/opt/moneywise-bot/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-2. Запустите контейнер, передав токен бота через переменные окружения:
+После добавления unit-файла выполните:
 
 ```bash
-docker run --rm -e BOT_TOKEN=ваш_токен_бота moneywise-bot
+sudo systemctl daemon-reload
+sudo systemctl enable --now moneywise-bot.service
 ```
 
-При необходимости можно переопределить `DATABASE_URL` и `LOG_LEVEL` аналогичным образом.
+Следите за логами сервиса через `journalctl -u moneywise-bot.service -f`.
 
 ## Миграции
 
