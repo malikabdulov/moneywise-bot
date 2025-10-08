@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from contextlib import suppress
 from decimal import Decimal
@@ -30,6 +31,7 @@ class AddExpenseStates(StatesGroup):
     """Finite states for step-by-step expense creation."""
 
     choosing_category = State()
+    choosing_date = State()
     entering_amount = State()
     entering_description = State()
 
@@ -39,6 +41,7 @@ class AddExpenseAction(CallbackData, prefix="exp"):
 
     action: str
     category_id: int | None = None
+    date: str | None = None
 
 
 def build_categories_keyboard(categories: list["Category"]) -> InlineKeyboardMarkup:
@@ -64,6 +67,31 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
     """Return inline keyboard with a single cancel button."""
 
     builder = InlineKeyboardBuilder()
+    builder.button(
+        text="Отмена",
+        callback_data=AddExpenseAction(action="cancel").pack(),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_date_keyboard(now: dt.datetime | None = None) -> InlineKeyboardMarkup:
+    """Return inline keyboard for picking the expense date."""
+
+    now = now or dt.datetime.now()
+    today = now.date()
+    options = [
+        ("Сегодня", today),
+        ("Вчера", today - dt.timedelta(days=1)),
+        ("Позавчера", today - dt.timedelta(days=2)),
+    ]
+
+    builder = InlineKeyboardBuilder()
+    for text, date in options:
+        builder.button(
+            text=text,
+            callback_data=AddExpenseAction(action="date", date=date.isoformat()).pack(),
+        )
     builder.button(
         text="Отмена",
         callback_data=AddExpenseAction(action="cancel").pack(),
@@ -159,13 +187,15 @@ async def category_chosen(
         category_id=category.id,
         category_name=category.name,
     )
-    await state.set_state(AddExpenseStates.entering_amount)
+    await state.set_state(AddExpenseStates.choosing_date)
     await callback.message.edit_text(
         (
             f'Категория "{category.name}" выбрана.\n'
-            "Введите сумму расхода:"
+            "Выберите дату расхода с помощью кнопок ниже "
+            "или отправьте дату сообщением в формате ДД.ММ.ГГГГ "
+            "(например, 05.09.2024)."
         ),
-        reply_markup=build_cancel_keyboard(),
+        reply_markup=build_date_keyboard(),
     )
     await callback.answer()
 
@@ -214,17 +244,25 @@ async def finalize_expense(
     """Persist the expense using data from the state and return confirmation text."""
 
     data = await state.get_data()
-    if "category_name" not in data or "amount" not in data:
+    if "category_name" not in data or "amount" not in data or "spent_at" not in data:
         await state.clear()
         raise ValueError("Не удалось завершить добавление расхода. Попробуйте ещё раз.")
 
     category_name = str(data["category_name"])
     amount = Decimal(str(data["amount"]))
+    try:
+        spent_at = dt.datetime.fromisoformat(str(data["spent_at"]))
+    except ValueError as exc:
+        await state.clear()
+        raise ValueError(
+            "Не удалось обработать дату расхода. Попробуйте добавить расход заново."
+        ) from exc
     confirmation = await expense_service.add_expense(
         user_id=user_id,
         amount=amount,
         category=category_name,
         description=description,
+        spent_at=spent_at,
     )
     await state.clear()
     return confirmation
@@ -301,3 +339,110 @@ async def cancel_addition(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_text("Добавление расхода отменено.")
 
     await callback.answer()
+
+
+def _combine_with_current_time(date_value: dt.date) -> dt.datetime:
+    """Return datetime using the provided date and current local time."""
+
+    now = dt.datetime.now()
+    return now.replace(year=date_value.year, month=date_value.month, day=date_value.day)
+
+
+def _format_date(date_value: dt.date) -> str:
+    """Return formatted date for user messages."""
+
+    return date_value.strftime("%d.%m.%Y")
+
+
+DATE_INPUT_HINT = (
+    "Введите дату в формате ДД.ММ.ГГГГ (например, 05.09.2024) "
+    "или воспользуйтесь кнопками ниже."
+)
+
+
+@router.callback_query(
+    AddExpenseAction.filter(F.action == "date"),
+    AddExpenseStates.choosing_date,
+)
+async def date_selected(
+    callback: CallbackQuery,
+    callback_data: AddExpenseAction,
+    state: FSMContext,
+) -> None:
+    """Process date selection and ask for the amount."""
+
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    try:
+        date_value = dt.date.fromisoformat(callback_data.date or "")
+    except ValueError:
+        await callback.answer("Не удалось определить дату", show_alert=True)
+        return
+
+    today = dt.date.today()
+    if date_value > today:
+        await callback.answer("Нельзя выбирать дату из будущего", show_alert=True)
+        return
+
+    data = await state.get_data()
+    category_name = str(data.get("category_name", ""))
+    spent_at = _combine_with_current_time(date_value).isoformat()
+    await state.update_data(spent_at=spent_at)
+    await state.set_state(AddExpenseStates.entering_amount)
+
+    message_text = "Введите сумму расхода:"
+    if category_name:
+        message_text = (
+            f'Категория "{category_name}" выбрана.\n'
+            f"Дата расхода: {_format_date(date_value)}.\n"
+            f"{message_text}"
+        )
+
+    await callback.message.edit_text(
+        message_text,
+        reply_markup=build_cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(AddExpenseStates.choosing_date)
+async def manual_date_entered(message: Message, state: FSMContext) -> None:
+    """Allow the user to type a custom date for the expense."""
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(DATE_INPUT_HINT)
+        return
+
+    try:
+        date_value = dt.datetime.strptime(text, "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer(
+            "Не удалось распознать дату. "
+            "Используйте формат ДД.ММ.ГГГГ, например 05.09.2024."
+        )
+        return
+
+    today = dt.date.today()
+    if date_value > today:
+        await message.answer(
+            "Нельзя выбрать дату из будущего. Попробуйте указать другую дату."
+        )
+        return
+
+    data = await state.get_data()
+    category_name = str(data.get("category_name", ""))
+
+    spent_at = _combine_with_current_time(date_value).isoformat()
+    await state.update_data(spent_at=spent_at)
+    await state.set_state(AddExpenseStates.entering_amount)
+
+    prompt = (
+        f'Категория "{category_name}" выбрана.\n'
+        f"Дата расхода: {_format_date(date_value)}.\n"
+        "Введите сумму расхода:"
+    )
+    await message.answer(prompt, reply_markup=build_cancel_keyboard())
+

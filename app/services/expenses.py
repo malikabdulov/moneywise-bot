@@ -50,10 +50,11 @@ class ExpenseService:
         amount: Decimal,
         category: str,
         description: str | None,
+        spent_at: dt.datetime | None = None,
     ) -> str:
         """Persist a new expense using validated data and return confirmation text."""
 
-        spent_at = dt.datetime.now()
+        spent_at = spent_at or dt.datetime.now()
 
         async with self._session_factory() as session:
             repository = ExpenseRepository(session)
