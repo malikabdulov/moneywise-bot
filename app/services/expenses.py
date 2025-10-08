@@ -8,8 +8,8 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Expense
-from app.db.repositories import ExpenseRepository, sum_expenses
+from app.db.models import Category, Expense
+from app.db.repositories import CategoryRepository, ExpenseRepository, sum_expenses
 
 
 TWO_PLACES = Decimal("0.01")
@@ -114,17 +114,43 @@ class ExpenseService:
         return "\n".join(lines)
 
     async def render_month_message(self, user_id: int) -> str:
-        """Return a monthly statistics text matching the legacy bot."""
+        """Return a monthly statistics text enriched with category limits."""
 
         summary = await self.get_month_summary(user_id=user_id)
-        if not summary.expenses:
+        categories = await self._list_categories(user_id=user_id)
+
+        if not summary.expenses and not categories:
             return "За текущий месяц ещё нет расходов"
 
         lines = ["Статистика за месяц:"]
-        for category, total in sorted(
-            summary.category_totals.items(), key=lambda item: item[1], reverse=True
-        ):
-            lines.append(f"{category}: {self._format_amount(total)} тенге")
+        if not summary.expenses:
+            lines.append("Расходов ещё не было.")
+
+        totals_by_normalized: dict[str, tuple[str, Decimal]] = {}
+        for name, total in summary.category_totals.items():
+            totals_by_normalized[self._normalize_category_name(name)] = (name, total)
+
+        if categories:
+            category_lines = []
+            for category in sorted(
+                categories,
+                key=lambda item: (
+                    -totals_by_normalized.get(item.normalized_name, ("", Decimal(0)))[1],
+                    item.name.lower(),
+                ),
+            ):
+                spent = totals_by_normalized.pop(
+                    category.normalized_name, (category.name, Decimal(0))
+                )[1]
+                category_lines.append(self._format_category_line(category, spent))
+            lines.extend(category_lines)
+
+        if totals_by_normalized:
+            for name, total in sorted(
+                totals_by_normalized.values(), key=lambda item: item[1], reverse=True
+            ):
+                lines.append(f"{name}: {self._format_amount(total)} тенге (лимит не задан)")
+
         lines.append(f"Всего: {self._format_amount(summary.total)} тенге")
         return "\n".join(lines)
 
@@ -201,6 +227,31 @@ class ExpenseService:
 
         return self._format_amount(value)
 
+    async def _list_categories(self, user_id: int) -> list[Category]:
+        """Return categories belonging to the user."""
+
+        async with self._session_factory() as session:
+            repository = CategoryRepository(session)
+            return await repository.list_categories(user_id=user_id)
+
+    def _format_category_line(self, category: Category, spent: Decimal) -> str:
+        """Return formatted statistic line for a category with limit info."""
+
+        limit = category.monthly_limit
+        line = (
+            f"{category.name}: {self._format_amount(spent)} тенге из лимита "
+            f"{self._format_amount(limit)} тенге"
+        )
+        if spent < limit:
+            remaining = limit - spent
+            line += f" — осталось {self._format_amount(remaining)} тенге"
+        elif spent == limit:
+            line += " — лимит исчерпан"
+        else:
+            over = spent - limit
+            line += f" — ⚠️ Перерасход {self._format_amount(over)} тенге"
+        return line
+
     def _render_confirmation(
         self, *, amount: Decimal, category: str, description: str | None
     ) -> str:
@@ -223,3 +274,9 @@ class ExpenseService:
         if normalized == normalized.to_integral():
             return f"{int(normalized)}"
         return f"{normalized.normalize()}"
+
+    @staticmethod
+    def _normalize_category_name(name: str) -> str:
+        """Normalize category name for consistent lookups."""
+
+        return name.strip().lower()
