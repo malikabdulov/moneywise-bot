@@ -41,7 +41,7 @@ class CategoryService:
         lines = ["Категории:"]
         for category in categories:
             lines.append(
-                f"{category.name} — лимит {self._format_amount(category.monthly_limit)} руб."
+                f"{category.name} — лимит {self._format_amount(category.monthly_limit)} тенге"
             )
         return "\n".join(lines)
 
@@ -79,7 +79,7 @@ class CategoryService:
 
         return (
             f'Категория "{category.name}" с лимитом '
-            f"{self._format_amount(category.monthly_limit)} руб. добавлена"
+            f"{self._format_amount(category.monthly_limit)} тенге добавлена"
         )
 
     async def update_category_limit(
@@ -102,7 +102,7 @@ class CategoryService:
 
         return (
             f'Лимит для категории "{category.name}" обновлён: '
-            f"{self._format_amount(category.monthly_limit)} руб."
+            f"{self._format_amount(category.monthly_limit)} тенге"
         )
 
     async def rename_category(self, user_id: int, category_id: int, new_name: str) -> str:
@@ -195,7 +195,7 @@ class CategoryService:
 
         return (
             f'Лимит для категории "{category.name}" обновлён: '
-            f"{self._format_amount(category.monthly_limit)} руб."
+            f"{self._format_amount(category.monthly_limit)} тенге"
         )
 
     async def rename_category_from_message(self, user_id: int, message_text: str) -> str:

@@ -36,6 +36,23 @@ class ExpenseService:
         """Parse message text, persist the expense and return the legacy response."""
 
         amount, category, description = self._parse_add_command(message_text)
+        return await self.add_expense(
+            user_id=user_id,
+            amount=amount,
+            category=category,
+            description=description,
+        )
+
+    async def add_expense(
+        self,
+        *,
+        user_id: int,
+        amount: Decimal,
+        category: str,
+        description: str | None,
+    ) -> str:
+        """Persist a new expense using validated data and return confirmation text."""
+
         spent_at = dt.datetime.now()
 
         async with self._session_factory() as session:
@@ -48,14 +65,11 @@ class ExpenseService:
                 spent_at=spent_at,
             )
 
-        lines = [
-            "Расход сохранён",
-            f"Сумма: {self._format_amount(amount)} руб.",
-            f"Категория: {category}",
-        ]
-        if description:
-            lines.append(f"Комментарий: {description}")
-        return "\n".join(lines)
+        return self._render_confirmation(
+            amount=amount,
+            category=category,
+            description=description,
+        )
 
     async def get_today_summary(self, user_id: int, now: dt.datetime | None = None) -> ExpenseSummary:
         """Return summary of today's expenses for the given user."""
@@ -93,9 +107,9 @@ class ExpenseService:
             time_text = expense.spent_at.strftime("%H:%M")
             description = f" ({expense.description})" if expense.description else ""
             lines.append(
-                f"{time_text} — {expense.category}: {self._format_amount(expense.amount)} руб.{description}"
+                f"{time_text} — {expense.category}: {self._format_amount(expense.amount)} тенге{description}"
             )
-        lines.append(f"Итого: {self._format_amount(summary.total)} руб.")
+        lines.append(f"Итого: {self._format_amount(summary.total)} тенге")
         return "\n".join(lines)
 
     async def render_month_message(self, user_id: int) -> str:
@@ -109,8 +123,8 @@ class ExpenseService:
         for category, total in sorted(
             summary.category_totals.items(), key=lambda item: item[1], reverse=True
         ):
-            lines.append(f"{category}: {self._format_amount(total)} руб.")
-        lines.append(f"Всего: {self._format_amount(summary.total)} руб.")
+            lines.append(f"{category}: {self._format_amount(total)} тенге")
+        lines.append(f"Всего: {self._format_amount(summary.total)} тенге")
         return "\n".join(lines)
 
     async def _build_summary(
@@ -156,7 +170,21 @@ class ExpenseService:
         amount_str, category = parts[0], parts[1]
         description = parts[2].strip() if len(parts) == 3 else None
 
-        normalized = amount_str.replace(",", ".")
+        amount = self.parse_amount(amount_str)
+
+        category = category.strip().lower()
+        if not category:
+            raise ValueError("Категория не может быть пустой")
+
+        return amount, category, description
+
+    def parse_amount(self, value: str) -> Decimal:
+        """Parse textual amount and return it as a Decimal."""
+
+        normalized = value.strip().replace(",", ".")
+        if not normalized:
+            raise ValueError("Сумма должна быть числом")
+
         try:
             amount = Decimal(normalized)
         except InvalidOperation as exc:  # pragma: no cover - defensive
@@ -165,11 +193,26 @@ class ExpenseService:
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной")
 
-        category = category.strip().lower()
-        if not category:
-            raise ValueError("Категория не может быть пустой")
+        return amount
 
-        return amount, category, description
+    def format_amount(self, value: Decimal) -> str:
+        """Public helper for rendering monetary values."""
+
+        return self._format_amount(value)
+
+    def _render_confirmation(
+        self, *, amount: Decimal, category: str, description: str | None
+    ) -> str:
+        """Return confirmation text matching the legacy bot."""
+
+        lines = [
+            "Расход сохранён",
+            f"Сумма: {self._format_amount(amount)} тенге",
+            f"Категория: {category}",
+        ]
+        if description:
+            lines.append(f"Комментарий: {description}")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_amount(value: Decimal) -> str:

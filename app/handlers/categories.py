@@ -172,7 +172,7 @@ async def show_category_details(
 
     text = (
         f'Категория "{category.name}"\n'
-        f"Месячный лимит: {category_service.format_amount(category.monthly_limit)} руб.\n\n"
+        f"Месячный лимит: {category_service.format_amount(category.monthly_limit)} тенге\n\n"
         "Выберите действие:"
     )
     await safe_edit_message(
