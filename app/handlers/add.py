@@ -89,7 +89,7 @@ def build_date_keyboard(now: dt.datetime | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for text, date in options:
         builder.button(
-            text=text,
+            text=f"{text} ({_format_date(date)})",
             callback_data=AddExpenseAction(action="date", date=date.isoformat()).pack(),
         )
     builder.button(

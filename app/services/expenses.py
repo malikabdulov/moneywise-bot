@@ -56,19 +56,31 @@ class ExpenseService:
 
         spent_at = spent_at or dt.datetime.now()
 
+        normalized_category = self._normalize_category_name(category)
+
         async with self._session_factory() as session:
-            repository = ExpenseRepository(session)
-            await repository.add_expense(
+            category_repository = CategoryRepository(session)
+            category_obj = await category_repository.get_by_normalized_name(
+                user_id=user_id,
+                normalized_name=normalized_category,
+            )
+            if category_obj is None:
+                raise ValueError(f'Категория "{category}" не найдена')
+
+            category_name = category_obj.name
+
+            expense_repository = ExpenseRepository(session)
+            await expense_repository.add_expense(
                 user_id=user_id,
                 amount=amount,
-                category=category,
+                category=category_name,
                 description=description,
                 spent_at=spent_at,
             )
 
         return self._render_confirmation(
             amount=amount,
-            category=category,
+            category=category_name,
             description=description,
         )
 
@@ -199,7 +211,7 @@ class ExpenseService:
 
         amount = self.parse_amount(amount_str)
 
-        category = category.strip().lower()
+        category = category.strip()
         if not category:
             raise ValueError("Категория не может быть пустой")
 
