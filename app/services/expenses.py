@@ -12,6 +12,9 @@ from app.db.models import Expense
 from app.db.repositories import ExpenseRepository, sum_expenses
 
 
+TWO_PLACES = Decimal("0.01")
+
+
 @dataclass(slots=True)
 class ExpenseSummary:
     """Aggregated data for a period of expenses."""
@@ -30,17 +33,14 @@ class ExpenseService:
         self._session_factory = session_factory
 
     async def add_expense_from_message(self, user_id: int, message_text: str) -> str:
-        """Parse message text and store the resulting expense.
-
-        Returns a human-readable confirmation message.
-        """
+        """Parse message text, persist the expense and return the legacy response."""
 
         amount, category, description = self._parse_add_command(message_text)
-        spent_at = dt.datetime.utcnow()
+        spent_at = dt.datetime.now()
 
         async with self._session_factory() as session:
             repository = ExpenseRepository(session)
-            expense = await repository.add_expense(
+            await repository.add_expense(
                 user_id=user_id,
                 amount=amount,
                 category=category,
@@ -48,15 +48,19 @@ class ExpenseService:
                 spent_at=spent_at,
             )
 
-        return (
-            f"Добавлена трата: {expense.amount} ₽, категория — {expense.category}"
-            + (f". Описание: {expense.description}" if expense.description else "")
-        )
+        lines = [
+            "Расход сохранён",
+            f"Сумма: {self._format_amount(amount)} руб.",
+            f"Категория: {category}",
+        ]
+        if description:
+            lines.append(f"Комментарий: {description}")
+        return "\n".join(lines)
 
     async def get_today_summary(self, user_id: int, now: dt.datetime | None = None) -> ExpenseSummary:
         """Return summary of today's expenses for the given user."""
 
-        now = now or dt.datetime.utcnow()
+        now = now or dt.datetime.now()
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + dt.timedelta(days=1)
         return await self._build_summary(user_id=user_id, start=start, end=end)
@@ -64,18 +68,50 @@ class ExpenseService:
     async def get_month_summary(self, user_id: int, now: dt.datetime | None = None) -> ExpenseSummary:
         """Return summary of the current month's expenses for the user."""
 
-        now = now or dt.datetime.utcnow()
+        now = now or dt.datetime.now()
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         next_month = (start + dt.timedelta(days=32)).replace(day=1)
         return await self._build_summary(user_id=user_id, start=start, end=next_month)
 
     async def list_recent_expenses(self, user_id: int, limit: int = 5) -> list[Expense]:
-        """Return the most recent expenses for a user."""
+        """Return the most recent expenses for the user."""
 
         async with self._session_factory() as session:
             repository = ExpenseRepository(session)
             expenses = await repository.list_recent_expenses(user_id=user_id, limit=limit)
         return expenses
+
+    async def render_today_message(self, user_id: int) -> str:
+        """Return a text report for today's expenses matching the legacy bot."""
+
+        summary = await self.get_today_summary(user_id=user_id)
+        if not summary.expenses:
+            return "Сегодня расходов ещё не было"
+
+        lines = ["Расходы сегодня:"]
+        for expense in summary.expenses:
+            time_text = expense.spent_at.strftime("%H:%M")
+            description = f" ({expense.description})" if expense.description else ""
+            lines.append(
+                f"{time_text} — {expense.category}: {self._format_amount(expense.amount)} руб.{description}"
+            )
+        lines.append(f"Итого: {self._format_amount(summary.total)} руб.")
+        return "\n".join(lines)
+
+    async def render_month_message(self, user_id: int) -> str:
+        """Return a monthly statistics text matching the legacy bot."""
+
+        summary = await self.get_month_summary(user_id=user_id)
+        if not summary.expenses:
+            return "За текущий месяц ещё нет расходов"
+
+        lines = ["Статистика за месяц:"]
+        for category, total in sorted(
+            summary.category_totals.items(), key=lambda item: item[1], reverse=True
+        ):
+            lines.append(f"{category}: {self._format_amount(total)} руб.")
+        lines.append(f"Всего: {self._format_amount(summary.total)} руб.")
+        return "\n".join(lines)
 
     async def _build_summary(
         self,
@@ -86,8 +122,12 @@ class ExpenseService:
     ) -> ExpenseSummary:
         async with self._session_factory() as session:
             repository = ExpenseRepository(session)
-            expenses = await repository.get_expenses_for_period(user_id=user_id, start=start, end=end)
-            category_totals = await repository.get_category_stats(user_id=user_id, start=start, end=end)
+            expenses = await repository.get_expenses_for_period(
+                user_id=user_id, start=start, end=end
+            )
+            category_totals = await repository.get_category_stats(
+                user_id=user_id, start=start, end=end
+            )
         total = sum_expenses(expenses)
         return ExpenseSummary(
             period_start=start,
@@ -114,16 +154,28 @@ class ExpenseService:
             raise ValueError("Нужно указать сумму и категорию. Пример: /add 250 еда")
 
         amount_str, category = parts[0], parts[1]
-        description = parts[2] if len(parts) == 3 else None
+        description = parts[2].strip() if len(parts) == 3 else None
 
+        normalized = amount_str.replace(",", ".")
         try:
-            amount = Decimal(amount_str)
+            amount = Decimal(normalized)
         except InvalidOperation as exc:  # pragma: no cover - defensive
             raise ValueError("Сумма должна быть числом") from exc
 
         if amount <= 0:
             raise ValueError("Сумма должна быть положительной")
 
-        category = category.lower()
+        category = category.strip().lower()
+        if not category:
+            raise ValueError("Категория не может быть пустой")
+
         return amount, category, description
 
+    @staticmethod
+    def _format_amount(value: Decimal) -> str:
+        """Return human readable representation compatible with the legacy bot."""
+
+        normalized = value.quantize(TWO_PLACES)
+        if normalized == normalized.to_integral():
+            return f"{int(normalized)}"
+        return f"{normalized.normalize()}"

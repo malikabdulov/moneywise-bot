@@ -16,6 +16,11 @@ async def cmd_start(message: Message) -> None:
     await message.answer(
         "Привет! Я помогу вести учёт расходов.\n"
         "Добавьте трату: /add 199 еда Обед\n"
+        "Категории: /categories\n"
+        "Добавить категорию: /category_add еда 15000\n"
+        "Изменить лимит: /category_limit еда 20000\n"
+        "Переименовать категорию: /category_rename еда | продукты\n"
+        "Удалить категорию: /category_delete еда\n"
         "Статистика за месяц: /stats\n"
         "Сегодняшние траты: /today"
     )

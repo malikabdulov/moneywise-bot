@@ -19,15 +19,5 @@ async def cmd_stats(message: Message, expense_service: ExpenseService) -> None:
         await message.answer("Не удалось определить пользователя.")
         return
 
-    summary = await expense_service.get_month_summary(user_id=message.from_user.id)
-
-    if not summary.expenses:
-        await message.answer("За текущий месяц ещё нет трат.")
-        return
-
-    lines = ["Статистика по категориям за месяц:"]
-    for category, total in sorted(summary.category_totals.items(), key=lambda item: item[1], reverse=True):
-        lines.append(f"• {category}: {total} ₽")
-    lines.append(f"Всего: {summary.total} ₽")
-
-    await message.answer("\n".join(lines))
+    report = await expense_service.render_month_message(user_id=message.from_user.id)
+    await message.answer(report)
