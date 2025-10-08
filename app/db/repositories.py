@@ -126,6 +126,17 @@ class CategoryRepository:
         result = await self._session.execute(statement)
         return list(result.scalars().all())
 
+    async def get_by_id(self, *, user_id: int, category_id: int) -> Category | None:
+        """Return category by identifier if it belongs to the user."""
+
+        statement = (
+            select(Category)
+            .where(Category.user_id == user_id)
+            .where(Category.id == category_id)
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_by_normalized_name(
         self, *, user_id: int, normalized_name: str
     ) -> Category | None:
