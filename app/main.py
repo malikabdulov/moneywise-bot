@@ -8,6 +8,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
 
 from app.config import ConfigurationError, get_settings
 from app.db import Base, create_session_factory, get_engine
@@ -34,7 +35,10 @@ async def on_startup() -> tuple[Dispatcher, Bot]:
     session_factory = create_session_factory(engine)
     expense_service = ExpenseService(session_factory)
 
-    bot = Bot(token=settings.bot.token, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.bot.token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     storage = MemoryStorage()
     dispatcher = Dispatcher(storage=storage)
     dispatcher.include_router(setup_routers())
