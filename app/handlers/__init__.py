@@ -2,7 +2,7 @@
 
 from aiogram import Router
 
-from . import add, start, stats, today
+from . import add, categories, start, stats, today
 
 
 def setup_routers() -> Router:
@@ -11,6 +11,7 @@ def setup_routers() -> Router:
     router = Router()
     router.include_router(start.router)
     router.include_router(add.router)
+    router.include_router(categories.router)
     router.include_router(stats.router)
     router.include_router(today.router)
     return router
