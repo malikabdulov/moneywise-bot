@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from app.config import ConfigurationError, get_settings
 from app.db import Base, create_session_factory, get_engine
 from app.handlers import setup_routers
-from app.services import CategoryService, ExpenseService
+from app.services import CategoryService, ExpenseService, UserService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ async def on_startup() -> tuple[Dispatcher, Bot]:
     session_factory = create_session_factory(engine)
     expense_service = ExpenseService(session_factory)
     category_service = CategoryService(session_factory)
+    user_service = UserService(session_factory)
 
     bot = Bot(
         token=settings.bot.token,
@@ -47,6 +48,7 @@ async def on_startup() -> tuple[Dispatcher, Bot]:
     dispatcher["settings"] = settings
     dispatcher["expense_service"] = expense_service
     dispatcher["category_service"] = category_service
+    dispatcher["user_service"] = user_service
     dispatcher["engine"] = engine
 
     return dispatcher, bot

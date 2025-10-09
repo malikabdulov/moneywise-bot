@@ -244,10 +244,12 @@ async def finalize_expense(
     """Persist the expense using data from the state and return confirmation text."""
 
     data = await state.get_data()
-    if "category_name" not in data or "amount" not in data or "spent_at" not in data:
+    required_keys = {"category_id", "category_name", "amount", "spent_at"}
+    if not required_keys.issubset(data):
         await state.clear()
         raise ValueError("Не удалось завершить добавление расхода. Попробуйте ещё раз.")
 
+    category_id = int(data["category_id"])
     category_name = str(data["category_name"])
     amount = Decimal(str(data["amount"]))
     try:
@@ -261,6 +263,7 @@ async def finalize_expense(
         user_id=user_id,
         amount=amount,
         category=category_name,
+        category_id=category_id,
         description=description,
         spent_at=spent_at,
     )
