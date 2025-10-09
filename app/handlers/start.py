@@ -6,12 +6,17 @@ from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 
+from app.services import UserService
+
 router = Router()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, user_service: UserService) -> None:
     """Send greeting and usage instructions to the user."""
+
+    if message.from_user is not None:
+        await user_service.upsert_from_telegram(message.from_user)
 
     await message.answer(
         "Привет! \n"

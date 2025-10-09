@@ -48,7 +48,8 @@ class ExpenseService:
         *,
         user_id: int,
         amount: Decimal,
-        category: str,
+        category: str | None = None,
+        category_id: int | None = None,
         description: str | None,
         spent_at: dt.datetime | None = None,
     ) -> str:
@@ -56,31 +57,37 @@ class ExpenseService:
 
         spent_at = spent_at or dt.datetime.now()
 
-        normalized_category = self._normalize_category_name(category)
-
         async with self._session_factory() as session:
             category_repository = CategoryRepository(session)
-            category_obj = await category_repository.get_by_normalized_name(
-                user_id=user_id,
-                normalized_name=normalized_category,
-            )
-            if category_obj is None:
-                raise ValueError(f'Категория "{category}" не найдена')
-
-            category_name = category_obj.name
+            if category_id is not None:
+                category_obj = await category_repository.get_by_id(
+                    user_id=user_id, category_id=category_id
+                )
+                if category_obj is None:
+                    raise ValueError("Категория не найдена")
+            else:
+                if not category:
+                    raise ValueError("Категория не указана")
+                normalized_category = self._normalize_category_name(category)
+                category_obj = await category_repository.get_by_normalized_name(
+                    user_id=user_id,
+                    normalized_name=normalized_category,
+                )
+                if category_obj is None:
+                    raise ValueError(f'Категория "{category}" не найдена')
 
             expense_repository = ExpenseRepository(session)
             await expense_repository.add_expense(
                 user_id=user_id,
                 amount=amount,
-                category=category_name,
+                category_id=category_obj.id,
                 description=description,
                 spent_at=spent_at,
             )
 
         return self._render_confirmation(
             amount=amount,
-            category=category_name,
+            category=category_obj.name,
             description=description,
         )
 
@@ -120,7 +127,10 @@ class ExpenseService:
             time_text = expense.spent_at.strftime("%H:%M")
             description = f" ({expense.description})" if expense.description else ""
             lines.append(
-                f"{time_text} — {expense.category}: {self._format_amount(expense.amount)} тенге{description}"
+                (
+                    f"{time_text} — {expense.category.name}: "
+                    f"{self._format_amount(expense.amount)} тенге{description}"
+                )
             )
         lines.append(f"Итого: {self._format_amount(summary.total)} тенге")
         return "\n".join(lines)

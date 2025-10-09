@@ -9,8 +9,73 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.db.models import Category, Expense
+from app.db.models import Category, Expense, User
+
+
+class UserRepository:
+    """Repository for persisting and retrieving :class:`User` entities."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_id(self, user_id: int) -> User | None:
+        statement = select(User).where(User.id == user_id)
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_by_telegram_id(self, telegram_id: int) -> User | None:
+        statement = select(User).where(User.telegram_id == telegram_id)
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def create_user(
+        self,
+        *,
+        user_id: int,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        language_code: str | None,
+        is_bot: bool,
+    ) -> User:
+        user = User(
+            id=user_id,
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            language_code=language_code,
+            is_bot=is_bot,
+        )
+        self._session.add(user)
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
+
+    async def update_user(
+        self,
+        user: User,
+        *,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        language_code: str | None,
+        is_bot: bool,
+    ) -> User:
+        user.telegram_id = telegram_id
+        user.username = username
+        user.first_name = first_name
+        user.last_name = last_name
+        user.language_code = language_code
+        user.is_bot = is_bot
+        self._session.add(user)
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
 
 
 class ExpenseRepository:
@@ -24,7 +89,7 @@ class ExpenseRepository:
         *,
         user_id: int,
         amount: Decimal,
-        category: str,
+        category_id: int,
         description: str | None,
         spent_at: dt.datetime,
     ) -> Expense:
@@ -33,7 +98,7 @@ class ExpenseRepository:
         expense = Expense(
             user_id=user_id,
             amount=amount,
-            category=category,
+            category_id=category_id,
             description=description,
             spent_at=spent_at,
         )
@@ -48,7 +113,7 @@ class ExpenseRepository:
         user_id: int,
         start: dt.datetime,
         end: dt.datetime,
-    ) -> list[Expense]:
+        ) -> list[Expense]:
         """Return expenses for a user in the given time frame."""
 
         statement = (
@@ -57,6 +122,7 @@ class ExpenseRepository:
             .where(Expense.spent_at >= start)
             .where(Expense.spent_at < end)
             .order_by(Expense.spent_at.asc())
+            .options(selectinload(Expense.category))
         )
         result = await self._session.execute(statement)
         expenses = list(result.scalars().all())
@@ -68,15 +134,16 @@ class ExpenseRepository:
         user_id: int,
         start: dt.datetime,
         end: dt.datetime,
-    ) -> dict[str, Decimal]:
+        ) -> dict[str, Decimal]:
         """Return aggregated expense sum grouped by category."""
 
         statement = (
-            select(Expense.category, func.sum(Expense.amount))
+            select(Category.name, func.sum(Expense.amount))
+            .join(Category, Expense.category_id == Category.id)
             .where(Expense.user_id == user_id)
             .where(Expense.spent_at >= start)
             .where(Expense.spent_at < end)
-            .group_by(Expense.category)
+            .group_by(Category.name)
         )
         result = await self._session.execute(statement)
         stats: dict[str, Decimal] = defaultdict(Decimal)
@@ -97,6 +164,7 @@ class ExpenseRepository:
             .where(Expense.user_id == user_id)
             .order_by(Expense.spent_at.desc())
             .limit(limit)
+            .options(selectinload(Expense.category))
         )
         result = await self._session.execute(statement)
         return list(result.scalars().all())
