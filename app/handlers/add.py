@@ -67,6 +67,24 @@ async def explain_add_usage(message: Message, state: FSMContext) -> None:
     await message.answer("Напиши расход, например: 'еда 2500'.")
 
 
+async def start_add_expense_flow(
+    message: Message,
+    *,
+    user_id: int,
+    category_service: CategoryService,
+    state: FSMContext,
+) -> None:
+    """Initiate the free-form expense flow triggered from other handlers."""
+
+    categories = await category_service.list_categories(user_id=user_id)
+    if not categories:
+        await message.answer(NO_CATEGORIES_TEXT)
+        return
+
+    await _reset_to_idle(state)
+    await message.answer("Напиши расход, например: 'еда 2500'.")
+
+
 @router.message(StateFilter(ExpenseInputStates.IDLE, None), F.text)
 async def handle_free_form_message(
     message: Message,
