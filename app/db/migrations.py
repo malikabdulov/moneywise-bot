@@ -12,7 +12,11 @@ async def ensure_notifications_flag(connection: AsyncConnection) -> None:
 
     def _column_missing(sync_connection: Connection) -> bool:
         inspector = inspect(sync_connection)
-        return not inspector.has_column("users", "notifications_enabled")
+        if not inspector.has_table("users"):
+            return False
+
+        columns = inspector.get_columns("users")
+        return all(column["name"] != "notifications_enabled" for column in columns)
 
     if await connection.run_sync(_column_missing):
         await connection.execute(
