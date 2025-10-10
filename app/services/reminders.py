@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -16,7 +14,6 @@ from app.db.repositories import UserRepository
 REMINDER_TEXT: str = "💭 Сегодня пока нет трат. Что-нибудь купить успел?"
 
 
-@dataclass(slots=True)
 class ReminderAction(CallbackData, prefix="remind"):
     """Callback data schema for reminder-related inline buttons."""
 
