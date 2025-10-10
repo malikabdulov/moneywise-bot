@@ -24,5 +24,6 @@ async def cmd_start(message: Message, user_service: UserService) -> None:
         "/add <b>199 еда Обед</b> - Можно добавить сразу \n"
         "/categories — Категории и управление лимитами \n"
         "/stats - Статистика за месяц\n"
-        "/today - Сегодняшние траты"
+        "/today - Сегодняшние траты\n"
+        "/reminder - Ежедневное напоминание о тратах"
     )

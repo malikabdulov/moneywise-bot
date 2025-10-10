@@ -77,6 +77,30 @@ class UserRepository:
         await self._session.refresh(user)
         return user
 
+    async def set_notifications(self, user: User, *, enabled: bool) -> User:
+        """Update notification preference for the given user."""
+
+        user.notifications_enabled = enabled
+        self._session.add(user)
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
+
+    async def toggle_notifications(self, user: User) -> User:
+        """Invert notification preference for the given user."""
+
+        return await self.set_notifications(
+            user,
+            enabled=not bool(user.notifications_enabled),
+        )
+
+    async def list_with_notifications_enabled(self) -> list[User]:
+        """Return users who opted-in for notifications."""
+
+        statement = select(User).where(User.notifications_enabled.is_(True))
+        result = await self._session.execute(statement)
+        return list(result.scalars().all())
+
 
 class ExpenseRepository:
     """Repository for working with :class:`Expense` records."""
@@ -168,6 +192,26 @@ class ExpenseRepository:
         )
         result = await self._session.execute(statement)
         return list(result.scalars().all())
+
+    async def has_expenses_in_period(
+        self,
+        *,
+        user_id: int,
+        start: dt.datetime,
+        end: dt.datetime,
+    ) -> bool:
+        """Return ``True`` if the user has expenses between ``start`` and ``end``."""
+
+        statement = (
+            select(func.count())
+            .select_from(Expense)
+            .where(Expense.user_id == user_id)
+            .where(Expense.spent_at >= start)
+            .where(Expense.spent_at < end)
+        )
+        result = await self._session.execute(statement)
+        count = result.scalar_one()
+        return int(count or 0) > 0
 
 
 def sum_expenses(expenses: Iterable[Expense]) -> Decimal:
