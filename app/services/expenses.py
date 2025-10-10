@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass
+import re
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,11 +28,111 @@ class ExpenseSummary:
     total: Decimal
 
 
+@dataclass(slots=True)
+class SmartExpenseDraft:
+    """Parsed entities extracted from a free-form expense message."""
+
+    category: Category | None
+    amount: Decimal | None
+    spent_at: dt.datetime | None
+    description: str | None
+
+
+DATE_PATTERN = re.compile(r"\b(\d{1,2})[.](\d{1,2})[.](\d{2,4})\b")
+AMOUNT_PATTERN = re.compile(r"(?<!\d)(\d+(?:[.,]\d{1,2})?)(?!\d)")
+DATE_ALIASES = {
+    "сегодня": 0,
+    "вчера": 1,
+    "позавчера": 2,
+}
+
+
 class ExpenseService:
     """Business logic for manipulating expenses."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    def parse_smart_message(
+        self,
+        message_text: str,
+        categories: Sequence[Category],
+        *,
+        now: dt.datetime | None = None,
+    ) -> SmartExpenseDraft:
+        """Extract entities from a free-form expense message."""
+
+        now = now or dt.datetime.now()
+        text = (message_text or "").strip()
+        if not text:
+            return SmartExpenseDraft(None, None, None, None)
+
+        spans: list[tuple[int, int]] = []
+
+        amount: Decimal | None = None
+        amount_match = AMOUNT_PATTERN.search(text)
+        if amount_match:
+            raw_amount = amount_match.group(1).replace(",", ".")
+            try:
+                parsed_amount = Decimal(raw_amount)
+            except InvalidOperation:
+                parsed_amount = None
+            else:
+                if parsed_amount > 0:
+                    amount = parsed_amount
+                    spans.append(amount_match.span())
+
+        spent_at: dt.datetime | None = None
+        date_match = DATE_PATTERN.search(text)
+        if date_match:
+            day, month, year = map(int, date_match.groups())
+            if year < 100:
+                year += 2000
+            try:
+                date_value = dt.date(year, month, day)
+            except ValueError:
+                date_value = None
+            else:
+                if date_value <= now.date():
+                    spent_at = now.replace(
+                        year=date_value.year,
+                        month=date_value.month,
+                        day=date_value.day,
+                    )
+                    spans.append(date_match.span())
+
+        if spent_at is None:
+            for alias, offset in DATE_ALIASES.items():
+                pattern = re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
+                match = pattern.search(text)
+                if match:
+                    date_value = now.date() - dt.timedelta(days=offset)
+                    spent_at = now.replace(
+                        year=date_value.year,
+                        month=date_value.month,
+                        day=date_value.day,
+                    )
+                    spans.append(match.span())
+                    break
+
+        category: Category | None = None
+        if categories:
+            for candidate in sorted(categories, key=lambda item: len(item.name), reverse=True):
+                pattern = re.compile(rf"\b{re.escape(candidate.name)}\b", re.IGNORECASE)
+                match = pattern.search(text)
+                if match:
+                    category = candidate
+                    spans.append(match.span())
+                    break
+
+        description: str | None
+        if spans:
+            description = self._extract_description(text, spans)
+        else:
+            normalized = " ".join(text.split())
+            description = normalized or None
+
+        return SmartExpenseDraft(category, amount, spent_at, description)
 
     async def add_expense_from_message(self, user_id: int, message_text: str) -> str:
         """Parse message text, persist the expense and return the legacy response."""
@@ -236,6 +338,25 @@ class ExpenseService:
             category_totals=category_totals,
             total=total,
         )
+
+    @staticmethod
+    def _extract_description(text: str, spans: Sequence[tuple[int, int]]) -> str | None:
+        """Return remaining text after removing recognised entity spans."""
+
+        if not spans:
+            return None
+
+        cleaned: list[str] = []
+        last_index = 0
+        for start, end in sorted(spans):
+            if start > last_index:
+                cleaned.append(text[last_index:start])
+            last_index = max(last_index, end)
+        cleaned.append(text[last_index:])
+
+        remaining = "".join(cleaned)
+        normalized = " ".join(remaining.split())
+        return normalized or None
 
     def _parse_add_command(self, message_text: str) -> tuple[Decimal, str, str | None]:
         """Parse the text of an /add command into components."""

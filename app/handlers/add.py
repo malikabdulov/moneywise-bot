@@ -34,6 +34,9 @@ router = Router()
 
 ADD_MORE_PROMPT = "➕ Добавить еще"
 SUCCESS_PREFIX = "✅ Расход добавлен!"
+SMART_INPUT_FALLBACK = (
+    "Не понял сообщение 🤔 Пример: \"такси 2500\" или \"2500 продукты\""
+)
 
 
 def build_success_keyboard() -> InlineKeyboardMarkup:
@@ -171,6 +174,125 @@ async def start_add_expense_flow(
     )
 
 
+@router.message(F.text)
+async def smart_expense_input(
+    message: Message,
+    state: FSMContext,
+    expense_service: ExpenseService,
+    category_service: CategoryService,
+) -> None:
+    """Handle free-form expense input when no FSM state is active."""
+
+    if message.from_user is None:
+        return
+
+    text = (message.text or "").strip()
+    if not text or text.startswith("/"):
+        return
+
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
+    categories = await category_service.list_categories(user_id=message.from_user.id)
+    parsed = expense_service.parse_smart_message(text, categories)
+
+    if (
+        parsed.category is None
+        and parsed.spent_at is None
+        and parsed.amount is None
+    ):
+        await message.answer(SMART_INPUT_FALLBACK)
+        return
+
+    if not categories:
+        await state.clear()
+        await message.answer(
+            "Сначала создайте хотя бы одну категорию через команду /categories.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    await state.clear()
+    data: dict[str, object] = {}
+    if parsed.category is not None:
+        data["category_id"] = parsed.category.id
+        data["category_name"] = parsed.category.name
+    if parsed.spent_at is not None:
+        data["spent_at"] = parsed.spent_at.isoformat()
+    if parsed.amount is not None:
+        data["amount"] = str(parsed.amount)
+    if (
+        parsed.description
+        and not (
+            parsed.category is not None
+            and parsed.spent_at is not None
+            and parsed.amount is not None
+        )
+    ):
+        data["prefilled_description"] = parsed.description
+    if data:
+        await state.update_data(**data)
+
+    if parsed.category is None:
+        await state.set_state(AddExpenseStates.choosing_category)
+        await message.answer(
+            "Выберите категорию для нового расхода:",
+            reply_markup=build_categories_keyboard(categories),
+        )
+        return
+
+    if parsed.spent_at is None:
+        await state.set_state(AddExpenseStates.choosing_date)
+        await message.answer(
+            (
+                f'Категория "{parsed.category.name}" выбрана.\n'
+                "Выберите дату расхода с помощью кнопок ниже "
+                "или отправьте дату сообщением в формате ДД.ММ.ГГГГ "
+                "(например, 05.09.2024)."
+            ),
+            reply_markup=build_date_keyboard(),
+        )
+        return
+
+    date_value = parsed.spent_at.date()
+    if parsed.amount is None:
+        await state.set_state(AddExpenseStates.entering_amount)
+        await message.answer(
+            (
+                f'Категория "{parsed.category.name}" выбрана.\n'
+                f"Дата расхода: {_format_date(date_value)}.\n"
+                "Введите сумму расхода:"
+            ),
+            reply_markup=build_cancel_keyboard(),
+        )
+        return
+
+    await state.set_state(AddExpenseStates.entering_description)
+    if parsed.description is not None:
+        try:
+            confirmation = await finalize_expense(
+                user_id=message.from_user.id,
+                state=state,
+                expense_service=expense_service,
+                description=parsed.description,
+            )
+        except ValueError as error:
+            await message.answer(str(error))
+            return
+
+        await message.answer(
+            render_success_message(confirmation),
+            reply_markup=build_success_keyboard(),
+        )
+        return
+
+    await message.answer(
+        _render_description_prompt(parsed.category.name, date_value),
+        reply_markup=build_description_keyboard(),
+    )
+
+
 @router.message(Command("add"))
 async def cmd_add(
     message: Message,
@@ -218,6 +340,7 @@ async def category_chosen(
     callback: CallbackQuery,
     callback_data: AddExpenseAction,
     category_service: CategoryService,
+    expense_service: ExpenseService,
     state: FSMContext,
 ) -> None:
     """Process category selection and ask for the amount."""
@@ -238,6 +361,59 @@ async def category_chosen(
         category_id=category.id,
         category_name=category.name,
     )
+    data = await state.get_data()
+    spent_at = _parse_spent_at_date(data.get("spent_at"))
+    amount = data.get("amount")
+    prefilled_raw = data.get("prefilled_description")
+    prefilled_description = (
+        prefilled_raw.strip()
+        if isinstance(prefilled_raw, str) and prefilled_raw.strip()
+        else None
+    )
+
+    if spent_at is not None:
+        if amount:
+            await state.set_state(AddExpenseStates.entering_description)
+            if prefilled_description:
+                try:
+                    confirmation = await finalize_expense(
+                        user_id=callback.from_user.id,
+                        state=state,
+                        expense_service=expense_service,
+                        description=prefilled_description,
+                    )
+                except ValueError as error:
+                    await callback.answer(str(error), show_alert=True)
+                    return
+
+                with suppress(TelegramBadRequest):
+                    await callback.message.edit_reply_markup()
+                await callback.message.answer(
+                    render_success_message(confirmation),
+                    reply_markup=build_success_keyboard(),
+                )
+                await callback.answer()
+                return
+
+            await callback.message.edit_text(
+                _render_description_prompt(category.name, spent_at),
+                reply_markup=build_description_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        await state.set_state(AddExpenseStates.entering_amount)
+        await callback.message.edit_text(
+            (
+                f'Категория "{category.name}" выбрана.\n'
+                f"Дата расхода: {_format_date(spent_at)}.\n"
+                "Введите сумму расхода:"
+            ),
+            reply_markup=build_cancel_keyboard(),
+        )
+        await callback.answer()
+        return
+
     await state.set_state(AddExpenseStates.choosing_date)
     await callback.message.edit_text(
         (
@@ -278,9 +454,37 @@ async def amount_received(
 
     await state.update_data(amount=str(amount))
     await state.set_state(AddExpenseStates.entering_description)
+    data = await state.get_data()
+    prefilled_raw = data.get("prefilled_description")
+    prefilled_description = (
+        prefilled_raw.strip()
+        if isinstance(prefilled_raw, str) and prefilled_raw.strip()
+        else None
+    )
+
+    if prefilled_description:
+        try:
+            confirmation = await finalize_expense(
+                user_id=message.from_user.id,
+                state=state,
+                expense_service=expense_service,
+                description=prefilled_description,
+            )
+        except ValueError as error:
+            await message.answer(str(error))
+            return
+
+        await message.answer(
+            render_success_message(confirmation),
+            reply_markup=build_success_keyboard(),
+        )
+        return
+
+    category_name = str(data.get("category_name", ""))
+    spent_at = _parse_spent_at_date(data.get("spent_at"))
 
     await message.answer(
-        "Добавьте комментарий к расходу или нажмите «Пропустить».",
+        _render_description_prompt(category_name, spent_at),
         reply_markup=build_description_keyboard(),
     )
 
@@ -438,6 +642,32 @@ def _format_date(date_value: dt.date) -> str:
     return date_value.strftime("%d.%m.%Y")
 
 
+def _parse_spent_at_date(value: str | None) -> dt.date | None:
+    """Return date extracted from ISO formatted datetime string."""
+
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+
+
+def _render_description_prompt(
+    category_name: str,
+    date_value: dt.date | None,
+) -> str:
+    """Return text prompting the user to provide an optional description."""
+
+    lines: list[str] = []
+    if category_name:
+        lines.append(f'Категория "{category_name}" выбрана.')
+    if date_value is not None:
+        lines.append(f"Дата расхода: {_format_date(date_value)}.")
+    lines.append("Добавьте комментарий к расходу или нажмите «Пропустить».")
+    return "\n".join(lines)
+
+
 DATE_INPUT_HINT = (
     "Введите дату в формате ДД.ММ.ГГГГ (например, 05.09.2024) "
     "или воспользуйтесь кнопками ниже."
@@ -451,6 +681,7 @@ DATE_INPUT_HINT = (
 async def date_selected(
     callback: CallbackQuery,
     callback_data: AddExpenseAction,
+    expense_service: ExpenseService,
     state: FSMContext,
 ) -> None:
     """Process date selection and ask for the amount."""
@@ -474,6 +705,46 @@ async def date_selected(
     category_name = str(data.get("category_name", ""))
     spent_at = _combine_with_current_time(date_value).isoformat()
     await state.update_data(spent_at=spent_at)
+
+    updated = await state.get_data()
+    amount = updated.get("amount")
+    prefilled_raw = updated.get("prefilled_description")
+    prefilled_description = (
+        prefilled_raw.strip()
+        if isinstance(prefilled_raw, str) and prefilled_raw.strip()
+        else None
+    )
+
+    if amount:
+        await state.set_state(AddExpenseStates.entering_description)
+        if prefilled_description:
+            try:
+                confirmation = await finalize_expense(
+                    user_id=callback.from_user.id,
+                    state=state,
+                    expense_service=expense_service,
+                    description=prefilled_description,
+                )
+            except ValueError as error:
+                await callback.answer(str(error), show_alert=True)
+                return
+
+            with suppress(TelegramBadRequest):
+                await callback.message.edit_reply_markup()
+            await callback.message.answer(
+                render_success_message(confirmation),
+                reply_markup=build_success_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        await callback.message.edit_text(
+            _render_description_prompt(category_name, date_value),
+            reply_markup=build_description_keyboard(),
+        )
+        await callback.answer()
+        return
+
     await state.set_state(AddExpenseStates.entering_amount)
 
     message_text = "Введите сумму расхода:"
@@ -492,7 +763,11 @@ async def date_selected(
 
 
 @router.message(AddExpenseStates.choosing_date)
-async def manual_date_entered(message: Message, state: FSMContext) -> None:
+async def manual_date_entered(
+    message: Message,
+    state: FSMContext,
+    expense_service: ExpenseService,
+) -> None:
     """Allow the user to type a custom date for the expense."""
 
     text = (message.text or "").strip()
@@ -521,6 +796,42 @@ async def manual_date_entered(message: Message, state: FSMContext) -> None:
 
     spent_at = _combine_with_current_time(date_value).isoformat()
     await state.update_data(spent_at=spent_at)
+
+    updated = await state.get_data()
+    amount = updated.get("amount")
+    prefilled_raw = updated.get("prefilled_description")
+    prefilled_description = (
+        prefilled_raw.strip()
+        if isinstance(prefilled_raw, str) and prefilled_raw.strip()
+        else None
+    )
+
+    if amount:
+        await state.set_state(AddExpenseStates.entering_description)
+        if prefilled_description:
+            try:
+                confirmation = await finalize_expense(
+                    user_id=message.from_user.id,
+                    state=state,
+                    expense_service=expense_service,
+                    description=prefilled_description,
+                )
+            except ValueError as error:
+                await message.answer(str(error))
+                return
+
+            await message.answer(
+                render_success_message(confirmation),
+                reply_markup=build_success_keyboard(),
+            )
+            return
+
+        await message.answer(
+            _render_description_prompt(category_name, date_value),
+            reply_markup=build_description_keyboard(),
+        )
+        return
+
     await state.set_state(AddExpenseStates.entering_amount)
 
     prompt = (
