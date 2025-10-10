@@ -17,9 +17,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -38,14 +36,16 @@ ADD_MORE_PROMPT = "➕ Добавить еще"
 SUCCESS_PREFIX = "✅ Расход добавлен!"
 
 
-def build_success_keyboard() -> ReplyKeyboardMarkup:
-    """Return reply keyboard suggesting to add another expense."""
+def build_success_keyboard() -> InlineKeyboardMarkup:
+    """Return inline keyboard suggesting to add another expense."""
 
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=ADD_MORE_PROMPT)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=ADD_MORE_PROMPT,
+        callback_data=AddExpenseAction(action="restart").pack(),
     )
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def render_success_message(confirmation: str) -> str:
@@ -200,26 +200,6 @@ async def cmd_add(
             render_success_message(confirmation),
             reply_markup=build_success_keyboard(),
         )
-        return
-
-    await start_add_expense_flow(
-        message,
-        user_id=message.from_user.id,
-        category_service=category_service,
-        state=state,
-    )
-
-
-@router.message(F.text == ADD_MORE_PROMPT)
-async def add_more_requested(
-    message: Message,
-    category_service: CategoryService,
-    state: FSMContext,
-) -> None:
-    """Restart the expense creation flow when the user taps the quick button."""
-
-    if message.from_user is None:
-        await message.answer("Не удалось определить пользователя.")
         return
 
     await start_add_expense_flow(
@@ -406,6 +386,30 @@ async def skip_description(
         reply_markup=build_success_keyboard(),
     )
     await callback.answer("Комментарий не добавлен")
+
+
+@router.callback_query(AddExpenseAction.filter(F.action == "restart"))
+async def add_more_requested(
+    callback: CallbackQuery,
+    category_service: CategoryService,
+    state: FSMContext,
+) -> None:
+    """Restart the expense creation flow when the user taps the quick button."""
+
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup()
+
+    await start_add_expense_flow(
+        callback.message,
+        user_id=callback.from_user.id,
+        category_service=category_service,
+        state=state,
+    )
+    await callback.answer()
 
 
 @router.callback_query(AddExpenseAction.filter(F.action == "cancel"))
