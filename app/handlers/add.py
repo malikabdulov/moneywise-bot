@@ -14,7 +14,12 @@ from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardRemove,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.services import CategoryService, ExpenseService
@@ -25,6 +30,31 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+ADD_MORE_PROMPT = "➕ Добавить еще"
+SUCCESS_PREFIX = "✅ Расход добавлен!"
+
+
+def build_success_keyboard() -> InlineKeyboardMarkup:
+    """Return inline keyboard suggesting to add another expense."""
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=ADD_MORE_PROMPT,
+        callback_data=AddExpenseAction(action="restart").pack(),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def render_success_message(confirmation: str) -> str:
+    """Return confirmation text prefixed with a friendly status line."""
+
+    confirmation = confirmation.strip()
+    if confirmation:
+        return f"{SUCCESS_PREFIX}\n\n{confirmation}"
+    return SUCCESS_PREFIX
 
 
 class AddExpenseStates(StatesGroup):
@@ -116,6 +146,31 @@ def build_description_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+async def start_add_expense_flow(
+    message: Message,
+    *,
+    user_id: int,
+    category_service: CategoryService,
+    state: FSMContext,
+) -> None:
+    """Start the multi-step expense creation flow."""
+
+    await state.clear()
+    categories = await category_service.list_categories(user_id=user_id)
+    if not categories:
+        await message.answer(
+            "Сначала создайте хотя бы одну категорию через команду /categories.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    await state.set_state(AddExpenseStates.choosing_category)
+    await message.answer(
+        "Выберите категорию для нового расхода:",
+        reply_markup=build_categories_keyboard(categories),
+    )
+
+
 @router.message(Command("add"))
 async def cmd_add(
     message: Message,
@@ -141,21 +196,17 @@ async def cmd_add(
             await message.answer(str(error))
             return
 
-        await message.answer(confirmation)
-        return
-
-    await state.clear()
-    categories = await category_service.list_categories(user_id=message.from_user.id)
-    if not categories:
         await message.answer(
-            "Сначала создайте хотя бы одну категорию через команду /categories."
+            render_success_message(confirmation),
+            reply_markup=build_success_keyboard(),
         )
         return
 
-    await state.set_state(AddExpenseStates.choosing_category)
-    await message.answer(
-        "Выберите категорию для нового расхода:",
-        reply_markup=build_categories_keyboard(categories),
+    await start_add_expense_flow(
+        message,
+        user_id=message.from_user.id,
+        category_service=category_service,
+        state=state,
     )
 
 
@@ -296,7 +347,10 @@ async def description_received(
         await message.answer(str(error))
         return
 
-    await message.answer(confirmation)
+    await message.answer(
+        render_success_message(confirmation),
+        reply_markup=build_success_keyboard(),
+    )
 
 
 @router.callback_query(
@@ -327,8 +381,35 @@ async def skip_description(
 
     with suppress(TelegramBadRequest):
         await callback.message.edit_reply_markup()
-    await callback.message.answer(confirmation)
+    await callback.message.answer(
+        render_success_message(confirmation),
+        reply_markup=build_success_keyboard(),
+    )
     await callback.answer("Комментарий не добавлен")
+
+
+@router.callback_query(AddExpenseAction.filter(F.action == "restart"))
+async def add_more_requested(
+    callback: CallbackQuery,
+    category_service: CategoryService,
+    state: FSMContext,
+) -> None:
+    """Restart the expense creation flow when the user taps the quick button."""
+
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_reply_markup()
+
+    await start_add_expense_flow(
+        callback.message,
+        user_id=callback.from_user.id,
+        category_service=category_service,
+        state=state,
+    )
+    await callback.answer()
 
 
 @router.callback_query(AddExpenseAction.filter(F.action == "cancel"))

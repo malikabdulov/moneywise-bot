@@ -91,6 +91,24 @@ class ExpenseService:
             description=description,
         )
 
+    async def has_expenses_on_date(
+        self,
+        user_id: int,
+        date_value: dt.date,
+    ) -> bool:
+        """Return ``True`` if the user has expenses for the provided date."""
+
+        start = dt.datetime.combine(date_value, dt.time.min)
+        end = start + dt.timedelta(days=1)
+
+        async with self._session_factory() as session:
+            repository = ExpenseRepository(session)
+            return await repository.has_expenses_in_period(
+                user_id=user_id,
+                start=start,
+                end=end,
+            )
+
     async def get_today_summary(self, user_id: int, now: dt.datetime | None = None) -> ExpenseSummary:
         """Return summary of today's expenses for the given user."""
 
