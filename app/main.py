@@ -14,6 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 
 from app.config import ConfigurationError, get_settings
 from app.db import Base, create_session_factory, get_engine
+from app.db.migrations import ensure_notifications_flag
 from app.handlers import setup_routers
 from app.services import (
     CategoryService,
@@ -39,6 +40,7 @@ async def on_startup() -> tuple[Dispatcher, Bot, AsyncIOScheduler]:
 
     engine = get_engine(settings)
     async with engine.begin() as connection:
+        await ensure_notifications_flag(connection)
         await connection.run_sync(Base.metadata.create_all)
 
     session_factory = create_session_factory(engine)
