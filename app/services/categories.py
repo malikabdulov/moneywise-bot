@@ -52,6 +52,17 @@ class CategoryService:
             repository = CategoryRepository(session)
             return await repository.get_by_id(user_id=user_id, category_id=category_id)
 
+    async def find_category_by_name(self, user_id: int, name: str) -> Category | None:
+        """Return a category by name using normalized comparison."""
+
+        normalized = self._normalize_name(name)
+
+        async with self._session_factory() as session:
+            repository = CategoryRepository(session)
+            return await repository.get_by_normalized_name(
+                user_id=user_id, normalized_name=normalized
+            )
+
     async def create_category(self, user_id: int, name: str, monthly_limit: Decimal) -> str:
         """Create a category using validated data and return confirmation text."""
 

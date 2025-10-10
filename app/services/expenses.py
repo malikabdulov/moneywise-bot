@@ -133,6 +133,38 @@ class ExpenseService:
             expenses = await repository.list_recent_expenses(user_id=user_id, limit=limit)
         return expenses
 
+    async def list_recent_categories(self, user_id: int, limit: int = 3) -> list[Category]:
+        """Return distinct categories ordered by most recent expense usage."""
+
+        expenses = await self.list_recent_expenses(user_id=user_id, limit=limit * 5)
+        recent: list[Category] = []
+        seen: set[int] = set()
+
+        for expense in expenses:
+            category = expense.category
+            if category is None or expense.category_id in seen:
+                continue
+            recent.append(category)
+            seen.add(expense.category_id)
+            if len(recent) >= limit:
+                break
+
+        if len(recent) >= limit:
+            return recent[:limit]
+
+        async with self._session_factory() as session:
+            repository = CategoryRepository(session)
+            categories = await repository.list_categories(user_id=user_id)
+
+        for category in categories:
+            if category.id in seen:
+                continue
+            recent.append(category)
+            if len(recent) >= limit:
+                break
+
+        return recent[:limit]
+
     async def render_recent_expenses_message(self, user_id: int, limit: int) -> str:
         """Return a formatted list of recent expenses."""
 
