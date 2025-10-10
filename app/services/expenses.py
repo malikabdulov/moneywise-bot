@@ -107,13 +107,32 @@ class ExpenseService:
         next_month = (start + dt.timedelta(days=32)).replace(day=1)
         return await self._build_summary(user_id=user_id, start=start, end=next_month)
 
-    async def list_recent_expenses(self, user_id: int, limit: int = 5) -> list[Expense]:
+    async def list_recent_expenses(self, user_id: int, limit: int = 10) -> list[Expense]:
         """Return the most recent expenses for the user."""
 
         async with self._session_factory() as session:
             repository = ExpenseRepository(session)
             expenses = await repository.list_recent_expenses(user_id=user_id, limit=limit)
         return expenses
+
+    async def render_recent_expenses_message(self, user_id: int, limit: int) -> str:
+        """Return a formatted list of recent expenses."""
+
+        expenses = await self.list_recent_expenses(user_id=user_id, limit=limit)
+        if not expenses:
+            return "Расходов ещё не было"
+
+        lines = ["Последние расходы:"]
+        for expense in expenses:
+            timestamp = expense.spent_at.strftime("%d.%m %H:%M")
+            description = f" ({expense.description})" if expense.description else ""
+            lines.append(
+                (
+                    f"{timestamp} — {expense.category.name}: "
+                    f"{self._format_amount(expense.amount)} тенге{description}"
+                )
+            )
+        return "\n".join(lines)
 
     async def render_today_message(self, user_id: int) -> str:
         """Return a text report for today's expenses matching the legacy bot."""
